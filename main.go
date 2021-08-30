@@ -3,9 +3,9 @@ import (
     "github.com/joho/godotenv"
 _    "log"
 _    "fmt"
-    "gsch/model"
     "sync"
     "time"
+    "gsch/scheduler"
 )
 
 func init() {
@@ -25,13 +25,13 @@ func main() {
 }
 
 func process(league string) {
-    var sch = event.NewScheduler(league)
+    var sch = scheduler.NewScheduler(league)
     defer sch.Destroy()
 
     for {
         sch.Work()
-        break;
-        time.Sleep(10000 * time.Millisecond)
+//        break;
+        time.Sleep(5000 * time.Millisecond)
     }
     wg.Done()
 }
