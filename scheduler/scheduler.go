@@ -2,9 +2,7 @@ package scheduler
 import (
     "os"
     "fmt"
-    "database/sql"
     "gsch/db"
-    "context"
     "time"
     "log"
     "sync"
@@ -18,43 +16,20 @@ type DueEvents struct {
 
 type Scheduler struct {
     league string
-    conn *sql.Conn
+    dbname string
+    wseCmd map[int]map[string]event.Cmd // locId => camera => event.Cmd
+    wseCmdMutex sync.Mutex
 }
 
 func NewScheduler(league string) *Scheduler {
-    return &Scheduler { league, nil }
-}
-
-func (sch *Scheduler) getConnection() (*sql.Conn, error) {
-    var conn *sql.Conn
-    var ctx = context.Background()
-    var err error
-    conn, err = db.Db().Conn(ctx)
-
-    if err != nil {
-        return nil, err
-    }
-
-    if _, err := conn.ExecContext(ctx, "use gos_" + league); err != nil {
-        return nil, err
-    }
-    return conn, nil
+    var sch Scheduler
+    sch.league = league
+    sch.dbname = "gos_" + league
+    return &sch
 }
 
 func (sch *Scheduler) Work() {
-    defer func () {
-        if sch.conn != nil {
-            sch.conn.Close()
-        }
-    }()
-
     var err error
-    if sch.conn, err = sch.getConnection(); err != nil {
-        log.Println(err)
-        return
-    }
-
-    log.Println("processing " + sch.league)
     var dueEvents *DueEvents
     var wg sync.WaitGroup
 
@@ -64,19 +39,16 @@ func (sch *Scheduler) Work() {
     }
     log.Println(dueEvents)
 
+    wg.Add(len(dueEvents.stopDue))
+
     for _, ev := range dueEvents.stopDue {
-        if ev.ManualSchedule && ev.ScheduleSignal != "stop" {
-            continue
-        }
-        wg.Add(1)
         go sch.stopEvent(&ev, &wg)
     }
+    wg.Wait()
+
+    wg.Add(len(dueEvents.startDue))
 
     for _, ev := range dueEvents.startDue {
-        if ev.ManualSchedule && ev.ScheduleSignal != "start" {
-            continue
-        }
-        wg.Add(1)
         go sch.startEvent(&ev, &wg)
     }
     wg.Wait()
@@ -84,7 +56,12 @@ func (sch *Scheduler) Work() {
 
 func (sch *Scheduler) stopEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
     defer wg.Done()
+
+    if ev.ManualSchedule && ev.ScheduleSignal != "stop" {
+        return
+    }
     log.Println(ev.Id)
+    db.Exec("update "+sch.dbname+".event set status = 2 where id = ?", ev.Id)
     // set stopping flag in hRedis
     // loc redis set status 2
 
@@ -92,84 +69,102 @@ func (sch *Scheduler) stopEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
 
 func (sch *Scheduler) startEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
     defer wg.Done()
+
+    if ev.ManualSchedule && ev.ScheduleSignal != "start" {
+        return
+    }
     log.Printf("start event #%d", ev.Id)
 
-    if os.Getenv("CHECK_CURRENT_STREAM" != "") {
+    if os.Getenv("CHECK_CURRENT_STREAM") != "" {
         // TODO
     }
 
-    // sch.LockLocation(ev)
+    if !sch.lockLocation(ev.Id, ev.GlobalId) {
+        return
+    }
+
     // hRedis update - starting the event
-    // load wse for the loc id
+    sch.loadWseCmd(ev.LocationId)
     // if address != "" and overlayvisible then set overlayconf
-    // load event streams and process
+    var streams = event.GetEventStreams(sch.dbname, ev.Id)
+
+    for _, stream := range streams {
+        if stream.Broadcast {
+            sch.broadcast(ev, stream.Camera, stream.AltStream)
+        }
+
+        if stream.Record {
+            sch.record(ev, stream.Camera)
+        }
+    }
     // hRedis update - wowza status
-    // update event.status = 1
+    db.Exec("update "+sch.dbname+".event set status = 1 where id = ?", ev.Id)
     // if target id then update related db
     // end of start event
 }
 
-func (sch *Scheduler) eventStreams(id int) *sql.Rows {
-    res, err := sch.conn.QueryContext(context.Background(), "select * from event_stream where event_id=?",
-        id)
+func (sch *Scheduler) loadWseCmd(locId int) (map[string]event.Cmd) {
+    sch.wseCmdMutex.Lock()
+    defer sch.wseCmdMutex.Unlock()
 
-    if err != nil {
-        panic(err)
+    if sch.wseCmd == nil {
+        rows := event.FindCmd(sch.dbname, locId)
+
+        sch.wseCmd = make(map[int]map[string]event.Cmd)
+
+        for _, row := range rows {
+            if sch.wseCmd[locId] == nil {
+                sch.wseCmd[locId] = make(map[string]event.Cmd)
+            }
+            sch.wseCmd[locId][row.Camera] = row
+        }
     }
-    return res
+
+    return sch.wseCmd[locId]
 }
 
 // retuns stop due and start due events
 func (sch *Scheduler) GetEvents() (*DueEvents, error) {
-    var err error
-
     var stopEv, startEv []event.SchEvent
     now := time.Now().Unix()
 
-    stopEv, err = sch.queryEvents(fmt.Sprintf(` where e.start < %d and e.status = 1 group by
+    stopEv = sch.queryEvents(fmt.Sprintf(` where e.start < %d and e.status = 1 group by
         e.id, ex.league, elv.local_vod_name`, now))
-
-    if err != nil {
-    log.Println(err)
-        return nil, err
-    }
 
     start := now + 60
     end := now
 
-    startEv, err = sch.queryEvents(fmt.Sprintf(` where e.start <= %d and e.end > %d and e.status = 0 group by e.id, ex.league, elv.local_vod_name`, start, end))
-
-    if err != nil {
-        return nil, err
-    }
+    startEv = sch.queryEvents(fmt.Sprintf(` where e.start <= %d and e.end > %d and e.status = 0 group by e.id, ex.league, elv.local_vod_name`, start, end))
 
     return &DueEvents{ stopEv, startEv }, nil
 }
 
-func (sch *Scheduler) queryEvents(query string) ([]event.SchEvent, error) {
-    rows, err := sch.conn.QueryContext(context.Background(), selectQry(sch.league) + query)
-
-    if err != nil {
-        return nil, err
-    }
+func (sch *Scheduler) queryEvents(query string) ([]event.SchEvent) {
+    rows, done := db.Query(selectQry(sch.league) + query)
+    defer done()
 
     var result []event.SchEvent
 
     for rows.Next() {
         var ev event.SchEvent
-        if err := ev.Scan(rows); err != nil {
-            return nil, err
-        }
+
+        ev.Scan(rows)
         result = append(result, ev)
     }
-    return result, nil
+    return result
 }
 
 // retuns common select query
 func selectQry(league string) string {
-    return `SELECT "` + league + `" as league,  e.id, e.start, e.end, e.location_id,
-    ifnull(e.manual_schedule, 0) manual_schedule, ifnull(e.schedule_signal, "") schedule_signal,
-    e.overlay_visible, e.sport, e.dir,
+    var db = "gos_" + league
+
+    return `SELECT "` + league + `" as league,
+        e.id, e.start, e.end, e.location_id,
+        ifnull(e.manual_schedule, 0) manual_schedule,
+        ifnull(e.schedule_signal, "") schedule_signal,
+        e.overlay_visible,
+        e.sport,
+        e.dir,
         elv.local_vod_name,
         t1.name team1,
         t2.name team2,
@@ -180,12 +175,12 @@ func selectQry(league string) string {
         global_id,
         ops.copy_method,
         use_rclone
-    FROM .event e INNER JOIN location l ON e.location_id = l.id
-        INNER JOIN team t1 ON t1.id = e.team_id1
-        INNER JOIN team t2 ON t2.id = e.team_id2
-        INNER JOIN sport sport ON sport.name = e.sport
-        INNER JOIN division d ON d.id = e.division_id
+    FROM `+db+`.event e INNER JOIN gos_`+league+`.location l ON e.location_id = l.id
+        INNER JOIN `+db+`.team t1 ON t1.id = e.team_id1
+        INNER JOIN `+db+`.team t2 ON t2.id = e.team_id2
+        INNER JOIN `+db+`.sport sport ON sport.name = e.sport
+        INNER JOIN `+db+`.division d ON d.id = e.division_id
         LEFT JOIN ops.location ops ON ops.id = l.global_id
-        LEFT JOIN event_export ex ON ex.event_id = e.id
-        LEFT JOIN event_local_vod elv ON elv.event_id = e.id`
+        LEFT JOIN `+db+`.event_export ex ON ex.event_id = e.id
+        LEFT JOIN `+db+`.event_local_vod elv ON elv.event_id = e.id`
 }

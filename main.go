@@ -1,38 +1,32 @@
 package main
 import (
-    "github.com/joho/godotenv"
-_    "log"
 _    "fmt"
     "sync"
     "time"
     "gsch/scheduler"
 )
 
-func init() {
-    godotenv.Load()
-}
-
 var leagues = []string {"teamsite" }
-var wg sync.WaitGroup
 
 func main() {
+    var wg sync.WaitGroup
+    wg.Add(len(leagues))
+
     for _, l := range leagues {
-        wg.Add(1)
-        go process(l)
+        go process(l, &wg)
     }
 
     wg.Wait()
 }
 
-func process(league string) {
-    var sch = scheduler.NewScheduler(league)
-    defer sch.Destroy()
+func process(league string, wg *sync.WaitGroup) {
+    defer wg.Done()
 
+    var sch = scheduler.NewScheduler(league)
     for {
         sch.Work()
 //        break;
         time.Sleep(5000 * time.Millisecond)
     }
-    wg.Done()
 }
 
