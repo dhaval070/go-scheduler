@@ -100,6 +100,7 @@ func (sch *Scheduler) startEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
 
     hredis.WowzaStarting(sch.league, ev.Id)
     sch.loadWseCmd(ev.LocationId)
+    sch.setOverlayConf(ev)
     // if address != "" and overlayvisible then set overlayconf and run camPreset
 
     for _, stream := range streams {
@@ -194,7 +195,7 @@ func selectQry(league string) string {
         ex.league AS target_league,
         ex.target_id,
         d.flood,
-        sport.nevco_code,
+        ifnull(sport.nevco_code, "") nevco_code,
         l.location, l.stream,
         ifnull(l.address, "") address,
         ifnull(l.port, "") port,

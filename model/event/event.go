@@ -12,7 +12,7 @@ type SchEvent struct {
     LocationId int
     ManualSchedule bool
     ScheduleSignal string
-    OverlayVisible bool
+    OverlayVisible int
     TargetId sql.NullInt32
     TargetLeague sql.NullString
     Sport sql.NullString
