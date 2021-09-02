@@ -19,14 +19,18 @@ type SchEvent struct {
     Dir string
     LocalVodName sql.NullString
     Team1 string
+    Team1LogoFile string
+    Team1ShortName string
     Team2 string
+    Team2LogoFile string
+    Team2ShortName string
     Flood sql.NullInt32
     NevcoCode sql.NullString
     Location string
     Stream sql.NullString
-    Address sql.NullString
-    Port sql.NullString
-    RedisPort sql.NullString
+    Address string
+    Port string
+    RedisPort string
     LocCopy sql.NullInt32
     GlobalId int
     CopyMethod string
@@ -36,7 +40,7 @@ type SchEvent struct {
 func (ev *SchEvent) Scan(r *sql.Rows) {
     err := r.Scan(&ev.League, &ev.Id, &ev.Start, &ev.End, &ev.LocationId, &ev.ManualSchedule, &ev.ScheduleSignal,
         &ev.OverlayVisible, &ev.Sport, &ev.Dir, &ev.LocalVodName,
-        &ev.Team1, &ev.Team2, &ev.TargetLeague, &ev.TargetId,
+        &ev.Team1, &ev.Team1LogoFile, &ev.Team1ShortName,  &ev.Team2, &ev.Team2LogoFile, &ev.Team2ShortName, &ev.TargetLeague, &ev.TargetId,
         &ev.Flood, &ev.NevcoCode, &ev.Location, &ev.Stream, &ev.Address,
         &ev.Port, &ev.RedisPort, &ev.LocCopy, &ev.GlobalId, &ev.CopyMethod, &ev.UseRclone)
 
@@ -122,7 +126,9 @@ func GetEventStreams(dbname string, eventId int) ([]EventStream){
 
         db.ScanRows(res, &r.EventId, &r.Camera, &r.Broadcast, &r.Record, &r.RecordAt, &r.AltStream)
 
-        result = append(result, r)
+        if (r.Broadcast || (r.Record && r.RecordAt == "local")) {
+            result = append(result, r)
+        }
     }
     return result
 }

@@ -7,6 +7,7 @@ import (
     "log"
     "sync"
     "gsch/model/event"
+    "gsch/hredis"
 )
 
 type DueEvents struct {
@@ -70,10 +71,20 @@ func (sch *Scheduler) stopEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
 func (sch *Scheduler) startEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
     defer wg.Done()
 
+    defer func() {
+        if r := recover(); r != nil {
+            log.Println(r)
+        }
+    }()
     if ev.ManualSchedule && ev.ScheduleSignal != "start" {
         return
     }
-    log.Printf("start event #%d", ev.Id)
+
+    var streams = event.GetEventStreams(sch.dbname, ev.Id)
+
+    if len(streams) == 0 {
+        return
+    }
 
     if os.Getenv("CHECK_CURRENT_STREAM") != "" {
         // TODO
@@ -83,21 +94,29 @@ func (sch *Scheduler) startEvent(ev *event.SchEvent, wg *sync.WaitGroup) {
         return
     }
 
-    // hRedis update - starting the event
+    log.Printf("start event #%d", ev.Id)
+
+    var wend = "success"
+
+    hredis.WowzaStarting(sch.league, ev.Id)
     sch.loadWseCmd(ev.LocationId)
-    // if address != "" and overlayvisible then set overlayconf
-    var streams = event.GetEventStreams(sch.dbname, ev.Id)
+    // if address != "" and overlayvisible then set overlayconf and run camPreset
 
     for _, stream := range streams {
         if stream.Broadcast {
-            sch.broadcast(ev, stream.Camera, stream.AltStream)
+            if !sch.broadcast(ev, stream.Camera, stream.AltStream) {
+                wend = "error"
+            }
         }
 
         if stream.Record {
-            sch.record(ev, stream.Camera)
+            if !sch.record(ev, stream.Camera) {
+                wend = "error"
+            }
         }
     }
-    // hRedis update - wowza status
+    hredis.WowzaDone(sch.league, ev.Id, wend)
+
     db.Exec("update "+sch.dbname+".event set status = 1 where id = ?", ev.Id)
     // if target id then update related db
     // end of start event
@@ -167,11 +186,19 @@ func selectQry(league string) string {
         e.dir,
         elv.local_vod_name,
         t1.name team1,
+        ifnull(t1.logo_file, "") t1_logo_file,
+        ifnull(t1.short_name, "") t1_short_name,
         t2.name team2,
-        ex.league AS target_league, ex.target_id,
+        ifnull(t2.logo_file, "") t2_logo_file,
+        ifnull(t2.short_name, "") t2_short_name,
+        ex.league AS target_league,
+        ex.target_id,
         d.flood,
         sport.nevco_code,
-        l.location, l.stream, l.address, l.port, l.redis_port, l.inmediate or e.inmediate AS loc_copy,
+        l.location, l.stream,
+        ifnull(l.address, "") address,
+        ifnull(l.port, "") port,
+        ifnull(l.redis_port, "") redis_port, l.inmediate or e.inmediate AS loc_copy,
         global_id,
         ops.copy_method,
         use_rclone

@@ -1,6 +1,6 @@
 package db
 import (
-    "github.com/joho/godotenv"
+    _ "gsch/dotenv"
     "log"
     "os"
     "database/sql"
@@ -10,7 +10,6 @@ import (
 var dbh *sql.DB
 
 func init() {
-    godotenv.Load()
     var dbc = os.Getenv("DB_CONNECTION")
     var err error
 
