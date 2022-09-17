@@ -24,7 +24,23 @@ jobs:
       - name: golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.46.2
-          cd go
-          /home/runner/go/bin/golangci-lint run --out-format checkstyle > ../golangci.xml
-          cd ..
-          cat golangci.xml
+          /home/runner/go/bin/golangci-lint run --out-format checkstyle > /home/runner/golangci.xml
+          cat /home/runner/golangci.xml
+      - name: upload report
+        uses: actions/upload-artifect@v3
+        with:
+          name: golangci.xml
+          path: /home/runner/golangci.xml
+job:
+  sonarqube:
+    name: sonarqube
+    runs-on: ubuntu-latest
+    steps:
+      - name: download report
+        uses: actions/download-artifact@v3
+        with:
+          name: golangci.xml
+
+      - uses: warchant/setup-sonar-scanner@v3
+      - name: run sonar scanner
+        run: sonar-scanner -Dsonar.organization=dhaval070 -Dsonar.projectKey=dhaval070 -Dsonar.host.url=${{secrets.SONAR_HOST_URL}} -Dsonar.login=${{secrets.SONAR_TOKEN}} -Dsonar.go.golangci-lint.reportPaths=golangci.xml
